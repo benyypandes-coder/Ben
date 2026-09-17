@@ -1,0 +1,98 @@
+name: Build Kurt Dhylan Moto Shop Inventory V3 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract Ben.zip if present
+        shell: bash
+        run: |
+          set -e
+          ZIP="$(find . -maxdepth 2 -type f -iname 'Ben.zip' -print -quit || true)"
+          if [ -n "$ZIP" ]; then
+            echo "Found $ZIP"
+            mkdir -p extracted
+            unzip -o "$ZIP" -d extracted
+            # If the ZIP contains a single top-level folder, use its contents as the source root.
+            if [ "$(find extracted -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && [ -d "$(find extracted -mindepth 1 -maxdepth 1 -type d)" ]; then
+              ROOT="$(find extracted -mindepth 1 -maxdepth 1 -type d)"
+            else
+              ROOT="extracted"
+            fi
+            echo "SOURCE_ROOT=$ROOT" >> "$GITHUB_ENV"
+          else
+            echo "Ben.zip not found; using repository root."
+            echo "SOURCE_ROOT=." >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI Android workload
+        shell: bash
+        run: |
+          dotnet workload install maui-android --skip-manifest-update
+
+      - name: Locate MAUI project
+        shell: bash
+        run: |
+          set -e
+          PROJECT="$(find "$SOURCE_ROOT" -type f -name '*.csproj' -print -quit || true)"
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: No .csproj file found."
+            echo "ZIP must contain the MAUI project source."
+            find "$SOURCE_ROOT" -maxdepth 5 -type f | sort | head -200
+            exit 1
+          fi
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "Found project: $PROJECT"
+
+      - name: Restore Android project
+        shell: bash
+        run: |
+          dotnet restore "$PROJECT" -f net10.0-android -r android-arm64
+
+      - name: Build APK
+        shell: bash
+        run: |
+          dotnet publish "$PROJECT" \
+            -f net10.0-android \
+            -r android-arm64 \
+            -c Release \
+            --no-restore \
+            -p:AndroidPackageFormat=apk \
+            -p:AndroidKeyStore=false
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -e
+          APK="$(find "$SOURCE_ROOT" -type f -name '*.apk' -print -quit || true)"
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            find "$SOURCE_ROOT" -type f | grep -E '\.(apk|aab)$' || true
+            exit 1
+          fi
+          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo "Found APK: $APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KurtDhylanMotoShopInventoryV3-APK
+          path: ${{ env.APK }}
+          if-no-files-found: error
